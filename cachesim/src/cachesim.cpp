@@ -3,15 +3,17 @@
 // Author      : 
 // Version     :
 // Copyright   : Your copyright notice
-// Description : Hello World in C++, Ansi-style
+// Description : A simple cache simulator
 //============================================================================
 
 // Didn't get a chance to implement argument since I am part-time student still need to work
-// Here I have made the input to be read from here.
-#define BLOCK_SIZE 32
-#define CACHE_SIZE 16384
-#define ASSOCIATIVITY 1
-#define WRITE_POLICY 'b'
+// Here I have made the input to be read from here. For Associativity, enter 'o'
+#define BLOCK_SIZE 16
+#define CACHE_SIZE 256
+#define ASSOCIATIVITY 'o'
+#define WRITE_POLICY 't'
+
+#define FILENAME "../cachesim/src/part_6.trc"
 
 #include <iostream>
 #include <fstream>
@@ -34,14 +36,28 @@ typedef struct {
 } Set;
 
 
-void updateAge(Set *set_in, int set_num, int cur_set) {
+bool updateAge(Set *set_in, int set_num, int cur_set) {
 	int n;
+	bool head = false;
+
+	if (set_num == 1) {
+		// If it's directly mapped, then the LRU bit is constantly updated even it is 0.
+		// Because the set is only 1, when missed the this way is always updating...
+		head = false;
+	}
+	else {
+		if (set_in->block[cur_set].age == 0) {
+			head = true;
+		}
+	}
 	// Update the age for remaining blocks age
 	for (n=0; n<set_num; n++) {
 		set_in->block[n].age += 1;
 	}
 	// Make the current used block age = 0
 	set_in->block[cur_set].age = 0;
+
+	return head;
 }
 
 
@@ -130,13 +146,13 @@ string hexToBinaryConv(string hex_value) {
 }
 
 
-int main(int argc, char **argv) {
+int main(void) {
 
 	// Input
-	int associative = ASSOCIATIVITY;					// i.e. 4-way set associative
-	int block_size = BLOCK_SIZE; 						// i.e. 32 Bytes
-	int cache_size = CACHE_SIZE;						// i.e. 16384 Bytes
-	char write_policy = WRITE_POLICY;					// Either 't' or 'b'
+	int block_size = BLOCK_SIZE; 															// i.e. 32 Bytes
+	int cache_size = CACHE_SIZE;															// i.e. 16384 Bytes
+	char write_policy = WRITE_POLICY;														// Either 't' or 'b'
+	int associative = (ASSOCIATIVITY == 'o') ? (cache_size / block_size) : ASSOCIATIVITY;	// i.e. 4-way set associative
 
 	int i, j, k, n;
 	int num_set = 0;
@@ -160,6 +176,14 @@ int main(int argc, char **argv) {
 	sets = (Set *)malloc(num_set * sizeof(Set));
 	for(i=0; i<num_set; i++) {
 		sets[i].block = (Blk *)malloc(associative*sizeof(Blk));
+		for(j=0; j<associative; j++) {
+			// Initialize memory
+			sets[i].block[j].tag = 0xfffffff;
+			sets[i].block[j].age = 0;
+			sets[i].block[j].valid = false;
+			sets[i].block[j].dirty = false;
+
+		}
 	}
 
 	// OUTPUT STATEMENT
@@ -178,7 +202,7 @@ int main(int argc, char **argv) {
 
 	cout << "Hex     Binary	  Address                 Set  Blk            Memory" << endl;
 	cout << "Address (tag/index/offset)           Tag Index off  Way UWay Read Writ" << endl;
-	cout << "====================================================================" << endl;
+	cout << "=====================================================================" << endl;
 
 	string line = "";
 	string mode = "";
@@ -207,10 +231,12 @@ int main(int argc, char **argv) {
 	bool read_flag = false;
 	bool write_flag = false;
 	bool flag_inner = false;
+	bool lru_check = false;
 
 	int way = 0;
+	int uway = 0;
 
-	ifstream memtrace_file ("../cachesim/src/ex_trace.trc");
+	ifstream memtrace_file (FILENAME);
 
 	if (memtrace_file.is_open()) {
 		while (getline(memtrace_file,line)) {
@@ -277,9 +303,10 @@ int main(int argc, char **argv) {
 								hit++;
 								way = i;
 
-								// Still want to update data in the cache (write-through: force to write to memory)
-								curSet->block[i].tag = (tag_dec + offset_dec);
-								updateAge(curSet, associative, i);
+								// In write-through: check whether -1 (already at lowest) or -2 (LRU bit needs to be updated)
+								uway = (lru_check) ? -1 : -2;
+
+								lru_check = updateAge(curSet, associative, i);
 								flag = true;
 								break;
 							}
@@ -288,6 +315,8 @@ int main(int argc, char **argv) {
 					if (!flag) {
 						miss++;
 						way = -1;
+						// Still want to update tag in the cache (write-through: do not update data to cache, but force to write to memory)
+						uway = -1;
 						flag_inner = false;
 
 						// If there is still empty cache block to write
@@ -295,7 +324,7 @@ int main(int argc, char **argv) {
 							if (!curSet->block[i].valid) {
 								curSet->block[i].valid = true;
 								curSet->block[i].tag = (tag_dec + offset_dec);
-								updateAge(curSet, associative, i);
+								lru_check = updateAge(curSet, associative, i);
 
 								flag_inner = true;
 								break;
@@ -312,7 +341,7 @@ int main(int argc, char **argv) {
 							}
 							// Update the tag to least used block
 							curSet->block[max_idx].tag = (tag_dec + offset_dec);
-							updateAge(curSet, associative, max_idx);
+							lru_check = updateAge(curSet, associative, max_idx);
 						}
 					}
 				}
@@ -325,12 +354,17 @@ int main(int argc, char **argv) {
 					flag = false;
 					way = false;
 
+
 					for(i=0; i<associative; i++) {
 						if (curSet->block[i].tag == tag_dec) {
 							if (curSet->block[i].valid) {
 								hit++;
 								way = i;
-								updateAge(curSet, associative, i);
+
+								// In write-through: check whether -1 (already at lowest) or -2 (LRU bit needs to be updated)
+								uway = (lru_check) ? -1 : -2;
+
+								lru_check = updateAge(curSet, associative, i);
 
 								flag = true;
 								break;
@@ -339,18 +373,22 @@ int main(int argc, char **argv) {
 					}
 					if (!flag) {
 						miss++;
-						way = -1;
 						flag_inner = false;
-
 						num_read++;
 						read_flag = true;
+
+						way = -1;
 
 						// If there are still space in the cache set block
 						for(i=0; i<associative; i++) {
 							if (!curSet->block[i].valid) {
 								curSet->block[i].valid = true;
+
+								// UWay: the way you bring the cache line to
+								uway = i;
+
 								curSet->block[i].tag = tag_dec;
-								updateAge(curSet, associative, i);
+								lru_check = updateAge(curSet, associative, i);
 
 								flag_inner = true;
 								break;
@@ -367,7 +405,11 @@ int main(int argc, char **argv) {
 							}
 							// Update the tag to least used block
 							curSet->block[max_idx].tag = tag_dec;
-							updateAge(curSet, associative, max_idx);
+
+							// UWay: the way you bring the cache line to
+							uway = max_idx;
+
+							lru_check = updateAge(curSet, associative, max_idx);
 						}
 					}
 				}
@@ -387,10 +429,13 @@ int main(int argc, char **argv) {
 								hit++;
 								way = i;
 
+								// For write-back, since you need to write something to the cache (a dirty bit due to mismatch)
+								uway = i;
+
 								// Set the dirty bit to indicate that the data in cache != memory, but do not write to memory
-								curSet->block[i].tag = tag_dec;
+								//curSet->block[i].tag = tag_dec;
 								curSet->block[i].dirty = ~curSet->block[i].dirty;
-								updateAge(curSet, associative, i);
+								lru_check = updateAge(curSet, associative, i);
 
 								flag = true;
 								break;
@@ -401,6 +446,7 @@ int main(int argc, char **argv) {
 						miss++;
 						// When misses, need to read from the memory and update the data
 						num_read++;
+						read_flag = true;
 						way = -1;
 						flag_inner = false;
 
@@ -410,10 +456,13 @@ int main(int argc, char **argv) {
 								curSet->block[i].valid = true;
 								curSet->block[i].tag = tag_dec;
 
+								// Uway is always the line you missed
+								uway = i;
+
 								// Block modified, update the dirty bit
 								curSet->block[i].dirty = ~curSet->block[i].dirty;
 
-								updateAge(curSet, associative, i);
+								lru_check = updateAge(curSet, associative, i);
 
 								flag_inner = true;
 								break;
@@ -440,7 +489,11 @@ int main(int argc, char **argv) {
 
 							// Update the tag to least used block
 							curSet->block[max_idx].tag = tag_dec;
-							updateAge(curSet, associative, max_idx);
+
+							// Uway is always the line you missed
+							uway = max_idx;
+
+							lru_check = updateAge(curSet, associative, max_idx);
 						}
 					}
 				}
@@ -459,7 +512,8 @@ int main(int argc, char **argv) {
 							if (curSet->block[i].valid) {
 								hit++;
 								way = i;
-								updateAge(curSet, associative, i);
+								uway = (lru_check) ? -1 : -2;
+								lru_check = updateAge(curSet, associative, i);
 
 								flag = true;
 								break;
@@ -479,10 +533,12 @@ int main(int argc, char **argv) {
 								curSet->block[i].valid = true;
 								curSet->block[i].tag = tag_dec;
 
+								uway = i;
+
 								// Memory updated, clear the dirty bit
 								curSet->block[i].dirty = ~curSet->block[i].dirty;
 
-								updateAge(curSet, associative, i);
+								lru_check = updateAge(curSet, associative, i);
 								flag_inner = true;
 								break;
 							}
@@ -506,9 +562,11 @@ int main(int argc, char **argv) {
 							// Memory updated, clear the dirty bit
 							curSet->block[i].dirty = ~curSet->block[i].dirty;
 
+							uway = max_idx;
+
 							// Update the tag to least used block
 							curSet->block[max_idx].tag = tag_dec;
-							updateAge(curSet, associative, max_idx);
+							lru_check = updateAge(curSet, associative, max_idx);
 						}
 					}
 				}
@@ -520,6 +578,7 @@ int main(int argc, char **argv) {
 			cout << setiosflags(ios::right) << setw(4) << set_dec << " ";
 			cout << setiosflags(ios::right) << setw(4) << offset_dec << " ";
 			cout << setiosflags(ios::right) << setw(4) << way << " ";
+			cout << setiosflags(ios::right) << setw(4) << uway << " ";
 			cout << setiosflags(ios::right) << setw(4) << read_flag << " ";
 			cout << setiosflags(ios::right) << setw(4) << write_flag << endl;
 
@@ -542,7 +601,6 @@ int main(int argc, char **argv) {
 	else {
 		cout << "Unable to open memtrace file";
 	}
-
 
 
 	double hit_ratio = 0.00;
